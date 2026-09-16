@@ -1,0 +1,9 @@
+{
+  "name": "CoordinatedPolice",
+  "version_number": "0.6.2",
+  "website_url": "https://github.com/holyfurries/coordinated-police",
+  "description": "Police responses scale with offense severity. Player-scaled patrols, replenishing reserves, mixed weapons, coordinated pursuits, searches, and stuck recovery. Vanilla officer toughness. SP/co-op, IL2CPP.",
+  "dependencies": [
+    "LavaGang-MelonLoader-0.7.3"
+  ]
+}

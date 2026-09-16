@@ -1,0 +1,7 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+  </PropertyGroup>
+  <ItemGroup><Compile Include="../src/PursuitSpacing.cs" Link="PursuitSpacing.cs" /><Compile Include="../src/PopulationRules.cs" Link="PopulationRules.cs" /><Compile Include="../src/ResponseState.cs" Link="ResponseState.cs" /><Compile Include="../src/Interception.cs" Link="Interception.cs" /><Compile Include="../src/StuckRecovery.cs" Link="StuckRecovery.cs" /><Compile Include="../src/SearchPattern.cs" Link="SearchPattern.cs" /><Compile Include="../src/ResponseRules.cs" Link="ResponseRules.cs" /></ItemGroup>
+</Project>

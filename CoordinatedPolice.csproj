@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>CoordinatedPolice</AssemblyName>
+    <Version>0.6.2</Version>
+    <Nullable>enable</Nullable>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="src/**/*.cs" />
+    <Reference Include="$(MelonLoaderDir)/net6/MelonLoader.dll" Private="false" />
+    <Reference Include="$(MelonLoaderDir)/net6/0Harmony.dll" Private="false" />
+    <Reference Include="$(MelonLoaderDir)/net6/Il2CppInterop.Runtime.dll" Private="false" />
+    <Reference Include="$(MelonLoaderDir)/Il2CppAssemblies/*.dll" Private="false" />
+  </ItemGroup>
+  <Target Name="CheckGameReferences" BeforeTargets="ResolveReferences">
+    <Error Condition="!Exists('$(MelonLoaderDir)/Il2CppAssemblies/Assembly-CSharp.dll')" Text="Set MelonLoaderDir to a MelonLoader directory with generated Il2CppAssemblies." />
+  </Target>
+</Project>

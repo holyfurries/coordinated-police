@@ -1,0 +1,15 @@
+bin/
+obj/
+dist/
+.ruff_cache/
+.vs/
+.idea/
+*.user
+*.suo
+*.log
+*.dll
+*.pdb
+MelonLoader/
+UserData/
+.env
+.env.*
