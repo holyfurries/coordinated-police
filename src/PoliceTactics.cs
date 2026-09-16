@@ -95,7 +95,7 @@ internal static class PoliceTactics
             if (weapon == null || string.IsNullOrEmpty(weapon.AssetPath)) return;
             OfficerWeapon kind = weapon.AssetPath == shotgun_path ? OfficerWeapon.Shotgun :
                 weapon.AssetPath == pursuit.Weapon_Gun?.AssetPath ? OfficerWeapon.Pistol : OfficerWeapon.Native;
-            float distance = ResponseRules.firing_distance(ResponseRules.role(index), kind);
+            float distance = ResponseRules.firing_distance(Main.pursuit_role(pursuit, index), kind);
             float maximum = weapon.MaxUseRange * 0.8f;
             float minimum = Math.Max(0f, weapon.MinUseRange);
             if (distance <= 0f || !float.IsFinite(minimum) || !float.IsFinite(maximum) || maximum <= minimum) return;

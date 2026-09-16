@@ -7,7 +7,9 @@ internal readonly record struct PopulationRules(int patrol_target, int reserve_t
     public static PopulationRules for_players(int player_count)
     {
         int players = Math.Clamp(player_count, 1, 4);
-        return new PopulationRules(players * 5, 8 + (players - 1) * 4);
+        PoliceSettings settings = PoliceSettings.current;
+        return new PopulationRules(players * settings.patrols_per_player,
+            Math.Min(112, settings.reserve_base + (players - 1) * settings.reserves_per_extra_player));
     }
 
     public static bool can_replenish(float defeated_seconds, float now_seconds, float body_distance_squared,

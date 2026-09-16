@@ -1,6 +1,5 @@
 using System;
 using Il2CppFishNet;
-using Il2CppScheduleOne.Law;
 using Il2CppScheduleOne.Map;
 using Il2CppScheduleOne.NPCs.Behaviour;
 using Il2CppScheduleOne.Persistence;
@@ -28,7 +27,6 @@ internal static class PolicePopulation
     private static readonly OfficerState[] states = new OfficerState[128];
     private static float next_seconds;
     private static float log_seconds;
-    private static int route_cursor;
     private static bool failed;
 
     public static void reset()
@@ -41,7 +39,7 @@ internal static class PolicePopulation
         Array.Clear(states, 0, states.Length);
         next_seconds = 0;
         log_seconds = 0;
-        route_cursor = 0;
+        PoliceDistricts.reset();
         failed = false;
     }
 
@@ -149,8 +147,11 @@ internal static class PolicePopulation
                 if (player != null && player.CrimeData != null && player.CrimeData.CurrentPursuitLevel != PlayerCrimeData.EPursuitLevel.None)
                     wanted = true;
             }
-            if (!wanted && patrol_count < rules.patrol_target)
+            bool districts_ready = PoliceDistricts.prepare(rules.patrol_target);
+            if (!wanted && districts_ready && patrol_count < rules.patrol_target)
                 deploy_patrols(rules, patrol_count, reserve_count);
+            else if (!wanted && districts_ready && patrol_count == rules.patrol_target)
+                rebalance_patrol();
             if (!wanted && patrol_count > rules.patrol_target)
                 return_patrols(patrol_count - rules.patrol_target);
             if (Time.time < log_seconds) return;
@@ -166,6 +167,7 @@ internal static class PolicePopulation
                 else if (officer.FootPatrolBehaviour != null && officer.FootPatrolBehaviour.Active && !officer.isInBuilding)
                     patrol_count++;
             }
+            if (districts_ready) PoliceDistricts.log();
             MelonLogger.Msg($"Police: Population players={players}, foot_patrols={patrol_count}/{rules.patrol_target}, reserves={reserve_count}/{rules.reserve_target}, defeated={defeated_count}, registered={count}, patrol_staffing_paused={wanted}. Targets depend on native officer availability and safe replacement locations.");
         }
         catch (Exception error)
@@ -224,21 +226,15 @@ internal static class PolicePopulation
 
     private static void deploy_patrols(PopulationRules rules, int patrol_count, int reserve_count)
     {
-        if (!LawController.InstanceExists) return;
-        LawActivitySettings settings = LawController.Instance.GetSettings();
-        if (settings == null || settings.Patrols == null) return;
-        int route_count = Math.Min(settings.Patrols.Length, 64);
-        if (route_count == 0) return;
-        int deployments = 0;
         int reserve_floor = Math.Max(4, rules.reserve_target / 2);
-        for (int attempt = 0; attempt < route_count && deployments < 1 && patrol_count < rules.patrol_target; attempt++)
+        if (reserve_count <= reserve_floor || patrol_count >= rules.patrol_target) return;
+        for (int attempt = 0; attempt < 64; attempt++)
         {
-            if (reserve_count <= reserve_floor) break;
-            int index = route_cursor % route_count;
-            route_cursor = (index + 1) % route_count;
-            PatrolInstance instance = settings.Patrols[index];
-            if (instance == null || instance.Route == null || instance.Route.Waypoints == null || instance.Route.Waypoints.Length == 0) continue;
-            Transform waypoint = instance.Route.Waypoints[Math.Clamp(instance.Route.StartWaypointIndex, 0, instance.Route.Waypoints.Length - 1)];
+            FootPatrolRoute? route = PoliceDistricts.next_route(out int district, out int route_members);
+            if (route == null) return;
+            int waypoint_count = Math.Min(route.Waypoints.Length, 128);
+            int waypoint_index = (Math.Clamp(route.StartWaypointIndex, 0, waypoint_count - 1) + route_members) % waypoint_count;
+            Transform waypoint = route.Waypoints[waypoint_index];
             if (waypoint == null) continue;
             PoliceStation station = PoliceStation.GetClosestPoliceStation(waypoint.position);
             if (station == null || station.SpawnPoint == null || station.OfficerPool.Count == 0) continue;
@@ -250,28 +246,54 @@ internal static class PolicePopulation
             ref OfficerState state = ref get_state(officer);
             if (!state.owned_patrol) state.auto_deactivate = officer.AutoDeactivate;
             state.owned_patrol = true;
-            int route_members = 0;
-            for (int i = 0; i < states.Length; i++)
-            {
-                PoliceOfficer? other = states[i].officer;
-                if (other == null || other == officer || !other.IsConscious || other.FootPatrolBehaviour == null) continue;
-                PatrolGroup group = other.FootPatrolBehaviour.Group;
-                if (group != null && group.Route != null && group.Route.Pointer == instance.Route.Pointer) route_members++;
-            }
-            int waypoint_count = Math.Min(instance.Route.Waypoints.Length, 128);
-            state.group = new PatrolGroup(instance.Route)
-            {
-                CurrentWaypoint = (Math.Clamp(instance.Route.StartWaypointIndex, 0, waypoint_count - 1) + route_members) % waypoint_count
-            };
+            state.group = new PatrolGroup(route) { CurrentWaypoint = waypoint_index };
             officer.AutoDeactivate = false;
             if (officer.CurrentBuilding != null) officer.ExitBuilding(officer.CurrentBuilding);
             officer.Activate();
             officer.Movement.Warp(station.SpawnPoint.position);
             officer.StartFootPatrol(state.group, false);
-            deployments++;
             patrol_count++;
-            reserve_count--;
-            MelonLogger.Msg($"Police: Patrol assigned officer={officer.ID}, route={instance.Route.RouteName}, waypoint={state.group.CurrentWaypoint}, foot_patrols={patrol_count}/{rules.patrol_target}. Departing station without route-start warp.");
+            PoliceDistricts.actual[district]++;
+            MelonLogger.Msg($"Police: Patrol assigned officer={officer.ID}, district={(EMapRegion)district}, route={route.RouteName}, waypoint={state.group.CurrentWaypoint}, foot_patrols={patrol_count}/{rules.patrol_target}. Departing station without route-start warp.");
+            return;
+        }
+    }
+
+    private static void rebalance_patrol()
+    {
+        FootPatrolRoute? route = PoliceDistricts.next_route(out int district, out int route_members);
+        if (route == null) return;
+        int waypoint_count = Math.Min(route.Waypoints.Length, 128);
+        int waypoint_index = (Math.Clamp(route.StartWaypointIndex, 0, waypoint_count - 1) + route_members) % waypoint_count;
+        Transform waypoint = route.Waypoints[waypoint_index];
+        if (waypoint == null) return;
+        int path_checks = 0;
+        for (int i = 0; i < states.Length && path_checks < 2; i++)
+        {
+            ref OfficerState state = ref states[i];
+            PoliceOfficer? officer = state.officer;
+            if (!state.owned_patrol || officer == null || !officer.IsConscious || officer.PursuitTarget != null ||
+                officer.IsInVehicle || officer.AssignedVehicle != null || officer.Movement == null ||
+                officer.FootPatrolBehaviour == null || !officer.FootPatrolBehaviour.Active ||
+                officer.isInBuilding || player_distance_squared(officer.transform.position) < 3600f ||
+                (officer.PursuitBehaviour != null && officer.PursuitBehaviour.Active) ||
+                (officer.VehiclePursuitBehaviour != null && officer.VehiclePursuitBehaviour.Active) ||
+                (officer.BodySearchBehaviour != null && officer.BodySearchBehaviour.Active) ||
+                (officer.CheckpointBehaviour != null && officer.CheckpointBehaviour.Active) ||
+                (officer.SentryBehaviour != null && officer.SentryBehaviour.Active)) continue;
+            PatrolGroup group = officer.FootPatrolBehaviour.Group;
+            if (group == null || group.Route == null) continue;
+            int previous = PoliceDistricts.region_for_route(group.Route);
+            if (previous < 0 || PoliceDistricts.actual[previous] <= PoliceDistricts.targets[previous]) continue;
+            path_checks++;
+            if (!PoliceNavigation.try_destination(officer.Movement, waypoint.position, out _)) continue;
+            officer.FootPatrolBehaviour.Disable_Networked(null);
+            state.group = new PatrolGroup(route) { CurrentWaypoint = waypoint_index };
+            officer.StartFootPatrol(state.group, false);
+            PoliceDistricts.actual[previous]--;
+            PoliceDistricts.actual[district]++;
+            MelonLogger.Msg($"Police: Patrol reassigned officer={officer.ID}, from={(EMapRegion)previous}, to={(EMapRegion)district}, route={route.RouteName}. Walking to new route.");
+            return;
         }
     }
 

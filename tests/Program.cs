@@ -6,6 +6,8 @@ internal static class Program
 {
     private static void Main()
     {
+        check_configuration();
+        check_districts();
         check_population();
         check_response();
         check_station_dispatch();
@@ -14,7 +16,126 @@ internal static class Program
         check_roles();
         check_interception();
         check_stuck_recovery();
-        Console.WriteLine("Population, severity, dispatch, roles, search, interception, and recovery checks passed.");
+        Console.WriteLine("Configuration, district allocation, population, severity, dispatch, roles, search, interception, and recovery checks passed.");
+    }
+
+    private static void check_configuration()
+    {
+        PoliceSettings defaults = PoliceSettings.current;
+        try
+        {
+            PoliceSettings invalid = new PoliceSettings
+            {
+                patrols_per_player = 100,
+                reserve_base = -1,
+                reserves_per_extra_player = 99,
+                response_size = float.NaN,
+                reinforcement_time = float.PositiveInfinity,
+                northtown_weight = -10,
+                uptown_weight = 100
+            }.validated();
+            require(invalid.patrols_per_player == 16 && invalid.reserve_base == 0 &&
+                invalid.reserves_per_extra_player == 16, "Population settings are bounded");
+            require(invalid.response_size == 1 && invalid.reinforcement_time == 1, "Non-finite settings use defaults");
+            require(invalid.northtown_weight == 0 && invalid.uptown_weight == 10, "District weights are bounded");
+            PoliceSettings.current = new PoliceSettings
+            {
+                patrols_per_player = 8,
+                reserve_base = 12,
+                reserves_per_extra_player = 5,
+                response_size = 1.5f,
+                reinforcement_time = 0.5f
+            }.validated();
+            require(PopulationRules.for_players(4) == new PopulationRules(32, 27), "Host population settings scale to four players");
+            ResponseRules response = ResponseRules.for_severity(ResponseSeverity.Armed, 4);
+            require(response.active_limit == 45 && response.dispatch_limit == 135 && response.burst_limit == 12,
+                "Response multiplier applies after player scaling");
+            require(response.interval_seconds == 1 && response.break_seconds == 2.5f, "Timing multiplier controls spacing and breaks");
+            var state = new ResponseState();
+            state.begin("host", 0);
+            require(state.dispatch_seconds == 2.5f, "Initial nearby response uses configured timing");
+            state.observe_crime("DischargeFirearm");
+            state.observe(true, false, Vector3.Zero, 0);
+            require(state.dispatch_seconds == 0.5f, "Urgent reinforcement delay uses configured timing");
+            require(state.request_dispatch(0.5f, 0, 6, DispatchSource.Nearby) == 6, "Configured burst admitted");
+            require(state.dispatch_seconds == 4.5f, "Configured solo armed burst break applied");
+            PoliceSettings.current = new PoliceSettings
+            {
+                patrols_per_player = 99,
+                reserve_base = 999,
+                reserves_per_extra_player = 999,
+                response_size = 999,
+                reinforcement_time = -1
+            }.validated();
+            require(PopulationRules.for_players(99) == new PopulationRules(64, 112), "Extreme population configuration is bounded");
+            ResponseRules capped = ResponseRules.for_severity(ResponseSeverity.Tactical, 99);
+            require(capped.active_limit == 64 && capped.burst_limit == 16 && capped.dispatch_limit == 320,
+                "Extreme response settings retain bounded active and burst limits");
+            require(capped.interval_seconds == 0.25f && capped.break_seconds == 1f, "Positive minimum timing preserved");
+        }
+        finally { PoliceSettings.current = defaults; }
+    }
+
+    private static void check_districts()
+    {
+        bool[] eligible = { true, true, true, true, true, true };
+        int[] weights = { 1, 1, 1, 1, 1, 1 };
+        int[] targets = new int[6];
+        DistrictAllocation.allocate(20, eligible, weights, targets);
+        require(targets[0] == 4 && targets[1] == 4 && targets[2] == 3 && targets[5] == 3,
+            "Twenty patrols distribute deterministically across six districts");
+        eligible = new[] { true, true, false, false, false, false };
+        DistrictAllocation.allocate(20, eligible, weights, targets);
+        require(targets[0] == 10 && targets[1] == 10 && targets[2] == 0, "Locked or unrouted districts receive no allocation");
+        weights[0] = 2;
+        DistrictAllocation.allocate(20, eligible, weights, targets);
+        require(targets[0] == 13 && targets[1] == 7, "Weights divide the global total rather than multiplying it");
+        weights[0] = 0;
+        DistrictAllocation.allocate(20, eligible, weights, targets);
+        require(targets[0] == 0 && targets[1] == 20, "Zero district weight excludes supplemental patrol assignment");
+        Array.Clear(weights);
+        DistrictAllocation.allocate(20, eligible, weights, targets);
+        require(Array.TrueForAll(targets, value => value == 0), "All-zero weights do not divide by zero");
+        for (int mask = 0; mask < 64; mask++)
+        {
+            for (int i = 0; i < 6; i++) { eligible[i] = (mask & (1 << i)) != 0; weights[i] = i + 1; }
+            for (int total = 0; total <= 64; total++)
+            {
+                DistrictAllocation.allocate(total, eligible, weights, targets);
+                int sum = 0;
+                for (int i = 0; i < 6; i++)
+                {
+                    sum += targets[i];
+                    require(targets[i] >= 0 && (eligible[i] || targets[i] == 0), "Allocation never escapes eligible districts");
+                }
+                require(sum == (mask == 0 ? 0 : total), "All eligibility combinations preserve the patrol budget");
+            }
+        }
+        int[] districts = { 0, 0, 1, 2 };
+        int[] members = { 3, 0, 0, 0 };
+        bool[] available = { true, true, true, true };
+        int[] actual = { 1, 0, 0, 0, 0, 0 };
+        targets = new[] { 5, 2, 0, 0, 0, 0 };
+        require(DistrictAllocation.choose_route(districts, members, available, actual, targets, 0) == 1,
+            "Largest deficit wins with least-used route inside the district");
+        available[1] = false;
+        require(DistrictAllocation.choose_route(districts, members, available, actual, targets, 0) == 0,
+            "Unavailable route does not block another route");
+        available[0] = false;
+        require(DistrictAllocation.choose_route(districts, members, available, actual, targets, 0) == 2,
+            "Unavailable district routes do not block another underserved district");
+        actual[1] = 2;
+        require(DistrictAllocation.choose_route(districts, members, available, actual, targets, 0) == -1,
+            "No surplus or zero-target deployment when eligible deficits are filled");
+        require(DistrictAllocation.choose_route(Array.Empty<int>(), Array.Empty<int>(), Array.Empty<bool>(), actual, targets, 0) == -1,
+            "Empty route list is safe");
+        districts = new[] { 0, 1 };
+        members = new[] { 0, 0 };
+        available = new[] { true, true };
+        actual = new int[6];
+        targets = new[] { 2, 2, 0, 0, 0, 0 };
+        require(DistrictAllocation.choose_route(districts, members, available, actual, targets, 1) == 1,
+            "Equal deficits rotate fairly through the route cursor");
     }
 
     private static void check_population()
@@ -123,6 +244,16 @@ internal static class Program
         response.observe(false, true, sighting, 201);
         require(response.last_known_position == sighting, "Initial search can use reported last-known position");
         require(SearchPattern.destination(sighting, 0, 0, 0) == sighting, "First officer checks last-known position");
+        for (int step = 0; step <= 10; step++)
+        {
+            for (int i = 0; i < 128; i++)
+            {
+                Vector3 point = SearchPattern.destination(sighting, i, step * 6, 0);
+                for (int j = 0; j < i; j++)
+                    require(Vector3.Distance(point, SearchPattern.destination(sighting, j, step * 6, 0)) > 1.5f,
+                        "All 128 search slots stay distinct throughout expansion");
+            }
+        }
         Vector3 first = SearchPattern.destination(sighting, 1, 0, 0);
         Vector3 second = SearchPattern.destination(sighting, 2, 0, 0);
         require(Vector3.Distance(first, second) > 1, "Officers search different points");
@@ -131,7 +262,7 @@ internal static class Program
             for (int attempt = 0; attempt < 4; attempt++)
             {
                 Vector3 point = SearchPattern.destination(sighting, index, 300, attempt);
-                require(Vector3.Distance(point, sighting) <= 12.01f, "Search remains bounded around last sighting");
+                require(Vector3.Distance(point, sighting) <= 33.01f, "Search remains bounded around last sighting");
                 require(point.Y == sighting.Y, "Search keeps the last-known height");
             }
         }
@@ -214,10 +345,6 @@ internal static class Program
 
     private static void check_roles()
     {
-        require(ResponseRules.role(0) == OfficerRole.Chaser, "Chaser role");
-        require(ResponseRules.role(1) == OfficerRole.Interceptor, "First interceptor role");
-        require(ResponseRules.role(2) == OfficerRole.Support, "Support role");
-        require(ResponseRules.role(3) == OfficerRole.Interceptor, "Second interceptor role");
         int armed_shotguns = 0;
         int tactical_shotguns = 0;
         int batons = 0;
@@ -233,8 +360,6 @@ internal static class Program
             require(armed is OfficerWeapon.Pistol or OfficerWeapon.Shotgun, "Armed response has no taser-only squads");
             if (armed == OfficerWeapon.Shotgun) armed_shotguns++;
             if (tactical == OfficerWeapon.Shotgun) tactical_shotguns++;
-            if (ResponseRules.role(i) == OfficerRole.Support)
-                require(tactical == OfficerWeapon.Pistol, "Support officer keeps a pistol");
         }
         require(batons == 4 && tasers == 8, "Nonlethal response mixes batons and tasers");
         require(armed_shotguns == 3 && tactical_shotguns == 6, "Tactical squads contain a larger shotgun share");
@@ -247,36 +372,65 @@ internal static class Program
 
     private static void check_interception()
     {
-        require(!Interception.try_offset(Vector2.Zero, new Vector2(6, -6), 0, out _), "Stationary players retain normal pursuit");
-        require(!Interception.try_offset(new Vector2(0.5f, 0), new Vector2(6, -6), 0, out _), "Ignore motion jitter");
-        require(!Interception.try_offset(new Vector2(13, 0), new Vector2(6, -6), 0, out _), "Reject implausible motion");
-        require(!Interception.try_offset(new Vector2(float.NaN, 0), new Vector2(6, -6), 0, out _), "Reject invalid motion");
-        require(!Interception.try_offset(new Vector2(float.PositiveInfinity, 0), new Vector2(6, -6), 0, out _), "Reject infinite motion");
-        require(Interception.try_offset(new Vector2(4, 0), new Vector2(6, -6), 0, out Vector2 right), "Moving target can be intercepted");
-        require(right == new Vector2(5, -6), "Lead follows eastward movement");
-        require(Interception.try_offset(new Vector2(4, 0), new Vector2(6, -6), 1, out Vector2 left), "Second interceptor");
-        require(left == new Vector2(-2, 6), "Interceptors use opposite sides");
-        require(Interception.try_offset(new Vector2(-4, 0), new Vector2(-6, 6), 0, out Vector2 reverse), "Reverse movement");
-        require(reverse == -right, "Prediction reverses with movement");
-        require(Interception.try_offset(new Vector2(0, 12), new Vector2(6, -6), 0, out Vector2 fast), "Bounded fast prediction");
-        require(fast == new Vector2(6, 8), "Lead distance is capped at eight metres");
-        require(Interception.try_offset(new Vector2(0, 1), new Vector2(6, -6), 0, out Vector2 slow), "Walking prediction");
-        require(slow == new Vector2(6, 2), "Short lead at walking speed");
-        require(Interception.try_offset(new Vector2(4, 0), new Vector2(-15, 0), 0, out Vector2 approach), "Flank approach available");
-        require(approach == new Vector2(-8, -6), "Spread sideways before advancing");
-        require(Interception.try_offset(new Vector2(4, 0), approach, 0, out Vector2 cutoff), "Advance from flank");
-        require(cutoff == new Vector2(5, -6), "Cut ahead after lateral separation");
-        require(!Interception.try_offset(new Vector2(4, 0), new Vector2(float.NaN, 0), 0, out _), "Invalid officer position rejected");
-        for (int first = 0; first < 24; first++)
+        Vector2[] positions = { new(20, -8), new(18, 8), new(-25, 0), new(2, 0), new(-4, 0) };
+        Vector2 velocity = new(4, 0);
+        require(Interception.assign(positions, 3, velocity).role == OfficerRole.Chaser,
+            "Closest officer chases regardless of registry slot");
+        require(Interception.assign(positions, 4, velocity).role == OfficerRole.Chaser,
+            "Larger pursuit keeps two close chasers");
+        PursuitAssignment right = Interception.assign(positions, 0, velocity);
+        PursuitAssignment left = Interception.assign(positions, 1, velocity);
+        require(right.role == OfficerRole.Interceptor && left.role == OfficerRole.Interceptor,
+            "Officers ahead take interception roles");
+        require(right.redirect && left.redirect && right.offset.Y < 0 && left.offset.Y > 0,
+            "Interceptors stay on their existing side");
+        require(right.offset.X == 6f && left.offset.X == 6f, "Cutoff uses bounded motion prediction");
+        PursuitAssignment trailing = Interception.assign(positions, 2, velocity);
+        require(trailing.role == OfficerRole.Support && trailing.offset.X < 0,
+            "Trailing backup approaches from behind instead of crossing through the player");
+        foreach (Vector2 invalid_velocity in new[] { Vector2.Zero, new Vector2(0.1f, 0), new Vector2(13, 0),
+            new Vector2(float.NaN, 0), new Vector2(float.PositiveInfinity, 0) })
+            require(Interception.assign(positions, 0, invalid_velocity).role == OfficerRole.Support,
+                "Stationary or invalid motion disables prediction while preserving approaches");
+        positions[0] = new Vector2(-2, -18);
+        require(Interception.assign(positions, 0, velocity).role == OfficerRole.Interceptor,
+            "Officer beside the route can intercept");
+        positions[0] = new Vector2(-20, -18);
+        require(Interception.assign(positions, 0, velocity).role == OfficerRole.Support,
+            "Officer well behind is not sent on a long cutoff");
+        positions[0] = new Vector2(1, 0);
+        require(Interception.assign(positions, 0, velocity).role == OfficerRole.Chaser &&
+            Interception.assign(positions, 4, velocity).role == OfficerRole.Support,
+            "Roles change when a different officer becomes closer");
+        positions[0] = new Vector2(float.NaN, float.NaN);
+        require(!Interception.assign(positions, 0, velocity).redirect, "Missing officer cannot receive a destination");
+        require(Interception.assign(positions, 4, velocity).role == OfficerRole.Support,
+            "A four-officer group reserves only the nearest chaser");
+        Vector2[] mirrored = { new(20, -8), new(2, 0) };
+        PursuitAssignment forward = Interception.assign(mirrored, 0, velocity);
+        mirrored[0] = -mirrored[0];
+        mirrored[1] = -mirrored[1];
+        require(Interception.assign(mirrored, 0, -velocity).offset == -forward.offset,
+            "Reversing the complete scene reverses cutoff geometry");
+        Vector2[] backup = new Vector2[128];
+        Array.Fill(backup, new Vector2(-40, 0));
+        for (int i = 0; i < backup.Length; i++)
         {
-            require(Interception.try_offset(new Vector2(4, 0), new Vector2(-15, 0), first, out Vector2 first_point), "Flank slot available");
-            for (int second = first + 1; second < 24; second++)
+            PursuitAssignment assignment = Interception.assign(backup, i, velocity);
+            require(float.IsFinite(assignment.offset.LengthSquared()), "Large groups produce finite plans");
+            if (i < 2) require(assignment.role == OfficerRole.Chaser, "Equal distances use deterministic chasers");
+            if (!assignment.redirect) continue;
+            require(assignment.offset.Length() <= 21.01f, "Incoming approaches remain local");
+            for (int j = 0; j < i; j++)
             {
-                require(Interception.try_offset(new Vector2(4, 0), new Vector2(-15, 0), second, out Vector2 second_point), "Other flank slot available");
-                require(Vector2.Distance(first_point, second_point) >= 1.99f, "Large groups get distinct flank destinations");
+                PursuitAssignment previous = Interception.assign(backup, j, velocity);
+                if (previous.redirect) require(Vector2.Distance(assignment.offset, previous.offset) > 1.5f,
+                    "Backup from one direction receives distinct approaches");
             }
         }
-        require(!Interception.try_offset(new Vector2(4, 0), Vector2.Zero, 64, out _), "Flank slots bounded");
+        Vector2[] other_incident = { new(1, 0) };
+        require(Interception.assign(other_incident, 0, velocity).role == OfficerRole.Chaser,
+            "Another target has its own chaser even during a large response");
         Vector2 push = PursuitSpacing.separation(new Vector2(0, 1), 1, 2);
         require(push == new Vector2(0, 2), "Nearby officers push apart");
         require(PursuitSpacing.separation(new Vector2(0, 4), 1, 2) == Vector2.Zero, "Distant officers do not affect spacing");

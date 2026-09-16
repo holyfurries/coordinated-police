@@ -20,12 +20,22 @@ internal readonly record struct ResponseRules(int active_limit, int dispatch_lim
             _ => throw new ArgumentOutOfRangeException(nameof(severity))
         };
         int extra_players = Math.Clamp(player_count, 1, 4) - 1;
-        return baseline with
+        ResponseRules scaled = baseline with
         {
             active_limit = baseline.active_limit + baseline.active_limit / 2 * extra_players,
             dispatch_limit = baseline.dispatch_limit + baseline.dispatch_limit / 2 * extra_players,
             burst_limit = baseline.burst_limit + extra_players + (severity >= ResponseSeverity.Armed && extra_players == 3 ? 1 : 0),
             break_seconds = severity >= ResponseSeverity.Armed ? Math.Max(4f, baseline.break_seconds - extra_players) : baseline.break_seconds
+        };
+        PoliceSettings settings = PoliceSettings.current;
+        int active = Math.Clamp((int)MathF.Ceiling(scaled.active_limit * settings.response_size), 1, 64);
+        return scaled with
+        {
+            active_limit = active,
+            dispatch_limit = Math.Clamp((int)MathF.Ceiling(scaled.dispatch_limit * settings.response_size), active, 512),
+            burst_limit = Math.Clamp((int)MathF.Ceiling(scaled.burst_limit * settings.response_size), 1, Math.Min(active, 16)),
+            interval_seconds = scaled.interval_seconds * settings.reinforcement_time,
+            break_seconds = scaled.break_seconds * settings.reinforcement_time
         };
     }
 
@@ -36,17 +46,6 @@ internal readonly record struct ResponseRules(int active_limit, int dispatch_lim
             "DeadlyAssault" or "DischargeFirearm" or "VehicularAssault" => ResponseSeverity.Armed,
             "Assault" or "Evading" or "FailureToComply" or "BrandishingWeapon" or "DrugTrafficking" => ResponseSeverity.Pursuit,
             _ => ResponseSeverity.Patrol
-        };
-    }
-
-    public static OfficerRole role(int officer_index)
-    {
-        if (officer_index < 0) throw new ArgumentOutOfRangeException(nameof(officer_index));
-        return (officer_index % 4) switch
-        {
-            0 => OfficerRole.Chaser,
-            2 => OfficerRole.Support,
-            _ => OfficerRole.Interceptor
         };
     }
 

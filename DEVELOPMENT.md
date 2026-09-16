@@ -1,6 +1,6 @@
 # Development notes
 
-Behavior and regression checks for Coordinated Police 0.6.2. The in-game checklist
+Behavior and regression checks for Coordinated Police 0.8.0. The in-game checklist
 is not a record of completed tests.
 
 ## Severity and dispatch
@@ -60,7 +60,7 @@ allowances per additional player, clamped to four-player scaling; bursts gain on
 additional player, plus one extra Armed/Tactical slot at four players. Armed/Tactical breaks
 shorten by one second per extra player, down to four seconds. Joining/leaving updates limits on observation without refunding spent
 allowance. Multiple wanted players can therefore produce larger combined responses.
-Native officer pools still limit simultaneous availability. Delayed recycling replenishes
+These are default settings. Configured multipliers apply after player scaling; native officer pools still limit simultaneous availability. Delayed recycling replenishes
 defeated officers when players are distant; it does not enlarge the NPC registry.
 
 ## Patrol population and reserve recycling
@@ -110,14 +110,17 @@ Manual checks for this release:
 
 ## Combat roles and weapons
 
-Roles use the officer's index in the native registry, repeating chaser, interceptor,
-support, interceptor. Movement eligibility and weapon selection use the same index. This is
-a selection pattern rather than a guarantee that every arriving crew contains all roles.
+Movement roles use relative positions within each target's pursuit. The nearest officer
+keeps native chase; groups of at least five retain two chasers. Equal distances use
+registry order as a deterministic tie-breaker. Officers at least twelve metres away
+and ahead, or no more than four metres behind with six metres of lateral separation,
+qualify for interception. Others provide support. Weapon selection still uses stable
+registry slots, so changing movement roles does not repeatedly swap equipped weapons.
 
 During native NonLethal pursuit, every third registry slot uses a baton and the others
 use tasers. During native Lethal pursuit, one in four slots uses a pump shotgun at Armed
 severity, rising to two in four at Tactical; remaining slots use the native police gun.
-Support slots keep the native gun. Arrest-only and investigating weapon choices stay native.
+Arrest-only and investigating weapon choices stay native.
 
 The host changes the path passed to `CombatBehaviour.SetWeapon`; the native weapon RPC
 replicates the selected asset. It does not modify shared prefab fields. The shotgun path
@@ -138,39 +141,50 @@ the host, with synced pursuit level supplying the baseline for remote players.
 On loss of the last officer's sighting, the coordinator freezes its last observed
 position. An initial search can instead start from the game's reported last-known
 position. Hidden movement cannot update the snapshot. Movement and native search hooks
-assign reachable points around it, expanding from four to twelve metres in six-second
-steps. Each officer tries at most four candidates every six seconds, with at most eight
-candidate checks per second globally. Unusable points fall back to native navigation.
-Vehicle search and native pursuit timeouts are preserved.
+assign reachable points around it. Up to 128 slots occupy sixteen angular sectors and
+eight rings, spaced three metres radially. Initial radii are four to twenty-five metres,
+expanding by up to eight metres in six-second steps. The first officer initially checks
+the exact sighting. Each slot has four local candidate angles. Each officer tries at most
+four candidates every six seconds, with eight candidate checks per second globally.
+Caches include target, origin and current per-target rank. Changed ranks invalidate the
+old slot; destinations within 1.5 metres of another active search reservation are rejected.
+Unusable or budget-limited points fall back to native navigation. Vehicle search and
+native pursuit timeouts are preserved.
 
-Visible-target flanking leaves the nearest visible on-foot pursuer on native pursuit.
-Interceptor roles split sides within each target's pursuit, excluding that nearest officer.
-Beyond twelve metres, moving-target flankers spread sideways before cutting ahead. Each
-interceptor gets a per-target slot, alternating sides with widths of six, eight, ten, and
-twelve metres. Further rows trail by two metres. Up to 64 slots are admitted. Velocity
-prediction still leads by 1.25 seconds, capped at eight metres before the row offset.
+The host plans movement once per officer per second, using at most 128 same-target,
+conscious on-foot officers within two metres of target elevation. Officers without their
+own sighting can use another pursuer's current sighting; no live target coordinates or
+velocity are read by the planner when all sight is lost. It then uses frozen-position
+search. Separate targets never share role ranks or destination reservations.
 
-Other visible pursuers receive a lateral adjustment away from same-target officers within
-three metres and within two metres vertically. Summed separation is capped at 2.5 metres
-and projected sideways so it does not directly push officers away from the target. The
-nearest visible pursuer and officers already within two metres keep native movement.
-This also handles stationary targets. It does not change speed, weapon ranges, or collision
-radii. Hidden targets immediately clear movement caches and use last-known-position search.
+Interceptors remain on their current side, with up to four candidates per side at
+four, seven, ten and thirteen metres laterally. Lead is 1.5 seconds, clamped to three
+to ten metres. Stationary, very slow, invalid or implausibly fast velocity disables
+prediction. Officers well behind the target approach from their own direction instead.
+Support arrivals share eight approach sectors, with three angular lanes and successive
+three-metre radial spacing. At most sixteen slots per sector are considered. Saturated
+sectors retain native movement. Nearby support uses lateral separation, capped at 2.5
+metres, without pushing directly away from the target. Chasers keep native movement.
 
-Movement redirects only native destinations within ten metres of a visible on-foot target.
-Each officer caches one candidate for one second, keyed by player and original destination.
-Candidates must sample within 0.75 metres using the officer's area mask, stay within one
-metre of candidate elevation and two metres of target elevation, and leave at least 0.25
-metres to the closest navigation edge. NavMeshAgent.CalculatePath must return PathComplete.
-A NavMesh raycast from the sampled original destination to the candidate must be clear,
-using the officer's agent type and area mask. This rejects offsets across navigation
-boundaries even when the candidate could be reached by a long detour. Search candidates
-use the same complete-path and edge checks without the offset raycast. Positions within 1.5 metres of another current same-target cached destination
-are rejected. Failed candidates retain native movement. Checks are bounded to one per officer
-per second (128 officers maximum); this does not guarantee separation in narrow passages.
+Movement redirects only native destinations within ten metres of a currently sighted
+on-foot target; cutoffs require the original goal within four metres. One-second caches
+are keyed by target and original destination. Candidates sample within 0.75 metres using
+the officer's area mask, stay within one metre of candidate elevation and two metres of
+target elevation, and require at least 0.25 metres of clearance to the closest NavMesh edge.
+NavMeshAgent.CalculatePath must return PathComplete. A NavMesh raycast from the sampled
+original destination to the candidate must be clear. Search uses the complete-path and
+edge checks without the offset raycast. Movement destinations within 1.5 metres of another
+current same-target reservation are rejected. Rejected candidates preserve native movement;
+reachable alternate routes around entire buildings are not inferred by these offsets.
+Queries remain bounded to one movement candidate per officer per second, plus the global
+search budget. Narrow passages and native fallback can still cause crowding.
 
-Validate open streets, building corners, and narrow alleys: the nearest pursuer should
-keep pressure while interceptors spread then advance. Check both wanted players in co-op
+Pistol firing distance uses the latest unexpired movement role for that target, falling
+back to normal chase distance when no plan exists. Shotguns retain their four-metre
+spacing regardless of movement role. No weapon, health, speed or detection buffs are added.
+
+Validate open streets, building corners, and narrow alleys: the closest pursuers should
+keep pressure while officers already ahead or beside the route attempt cutoffs. Check both wanted players in co-op
 and confirm sides are assigned within each pursuit. Test stationary shootouts with 10+
 officers, melee/arrest contact, and station departures for clustering or jitter. Break sight and turn behind a building;
 search must remain around the old sighting. Check for repeated side-switching or stalled
@@ -227,7 +241,7 @@ nix-shell -p dotnet-sdk_8 --run 'dotnet run --project tests/Tests.csproj'
 
 MelonLoader must contain `net6` and generated `Il2CppAssemblies` from a successful
 modded game launch. Game references are not redistributed.
-Output: `dist/CoordinatedPolice-0.6.2.zip`.
+Output: `dist/CoordinatedPolice-0.8.0.zip`.
 
 Format C# with `dotnet format CoordinatedPolice.csproj` in a .NET SDK Nix shell,
 with `MelonLoaderDir` in the environment. Format `tests/Tests.csproj` separately.
@@ -250,3 +264,68 @@ Dispatch messages distinguish approved station requests from actual arrivals. Po
 in snapshots refer to the closest station to the saved last-known position. Diagnostics
 do not establish client replication. Compare both logs during a joining-player pursuit,
 join/leave, search, escape, and scene reload.
+
+## District allocation and settings
+
+PoliceConfiguration reads the CoordinatedPolice MelonPreferences category at startup.
+PoliceSettings validates the values, logs corrections and writes the effective values
+back. Configuration edits require a process restart; there is no mid-incident reload.
+Only host-authoritative paths use these settings for gameplay. Clients do not send
+configuration to the host.
+
+The patrol total stays at 5 times connected players by default (one-to-four scaling).
+Reserve defaults stay at 8 plus 4 per additional player. Settings permit patrol totals
+up to 64 and reserve targets up to 112; targets can exceed native pool availability.
+Response size multiplies active, total and burst limits after player scaling, rounded
+up, with caps of 64 active, 512 total and 16 per burst per incident. Timing multiplies
+spacing, breaks, initial nearby delay and urgent escalation delay. Pending reservations
+and the search-wave eligibility window are unchanged.
+
+PoliceDistricts uses Map.GetRegionFromPosition with eight evenly spaced samples per
+native route, assigning routes to their majority district. Ties use enum order.
+Up to 64 classifications are cached for the scene; missing waypoints are skipped.
+Current law settings provide at most 64 candidate routes, deduplicated by identity.
+Unlocked districts with candidate routes and positive configured weights are eligible.
+
+DistrictAllocation apportions the global target with integer quotas and largest
+remainders, preserving the total. Equal remainders use district enum order. All-zero
+eligible weights produce zero allocations. Existing native active foot patrols count
+by assigned route; officers without a route fall back to their current district.
+
+Deployment chooses the largest deficit, then fewer route members. Equal candidates
+rotate by route cursor. Failed deployment candidates are skipped for the current tick,
+so an unavailable station does not block every other district. Station departures
+retain the existing reserve floor, player-distance checks and one-per-five-second cap.
+
+At the global target, at most one mod-owned idle patrol can change route per tick.
+It must be outside buildings, free of vehicles/pursuits/search/checkpoint/sentry duties,
+and 60 metres from all players. Up to two complete-path checks are attempted.
+The officer walks to the reassigned route; no reassignment warp is performed.
+Native patrol assignments are never commandeered. Therefore vanilla overstaffing,
+nearby players, unavailable paths or native pool shortages can prevent ideal coverage.
+
+District diagnostics accompany the existing 30-second population log. They describe
+assigned-route coverage, not exact physical occupancy. District labels and targets
+must be compared with native routes in-game, especially across region boundaries.
+
+Regression checks cover all 64 eligibility masks with patrol budgets 0–64, weighted
+quotas, zero weights, deficit selection, unavailable routes, cursor fairness, malformed
+settings, unchanged defaults, multiplayer scaling and configured dispatch timing.
+
+Manual checks: load as host with one and four players; inspect effective config and
+district logs. Unlock another district and observe allocations change. Try unequal
+weights, zero weights and higher patrol targets. Confirm joining-client preferences
+do not alter host decisions; confirm staffing/reassignment pauses while anyone is
+wanted. Validate route changes on host and clients and verify there is no teleport.
+These native behaviors remain unverified by the standalone tests.
+
+## 0.8.0 validation
+
+Pure checks cover distance-ranked chasers, role changes after movement or removal,
+same-side cutoffs, bounded prediction, invalid motion, stationary support approaches,
+128-officer saturation, separate target inputs, and distinct search slots throughout
+expansion. Runtime movement reads only same-target officer positions; native network
+replication, NavMesh behaviour and host/client agreement still require in-game checks.
+Verify a player turns back through a chase, reinforcements enter from the same street,
+and a four-player shootout transitions into search. Hidden player movement must not
+move the search origin. Check arrest contact and weapon spacing after roles change.

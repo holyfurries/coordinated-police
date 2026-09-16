@@ -11,7 +11,7 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.AI;
 
-[assembly: MelonInfo(typeof(CoordinatedPolice.Main), "Coordinated Police", "0.6.2", "holyfurries")]
+[assembly: MelonInfo(typeof(CoordinatedPolice.Main), "Coordinated Police", "0.8.0", "holyfurries")]
 [assembly: MelonGame("TVGS", "Schedule I")]
 
 namespace CoordinatedPolice;
@@ -26,6 +26,7 @@ public sealed class Main : MelonMod
     private static readonly float[] intercept_seconds = new float[officer_limit];
     private static readonly Vector3[] intercept_origins = new Vector3[officer_limit];
     private static readonly Vector3[] intercept_positions = new Vector3[officer_limit];
+    private static readonly OfficerRole[] pursuit_roles = new OfficerRole[officer_limit];
     private static readonly bool[] intercept_valid = new bool[officer_limit];
     private static readonly string?[] intercept_targets = new string?[officer_limit];
     private static readonly StuckRecovery[] recoveries = new StuckRecovery[officer_limit];
@@ -33,6 +34,7 @@ public sealed class Main : MelonMod
     private struct SearchCache
     {
         public string? player_code;
+        public int slot;
         public Vector3 origin;
         public Vector3 destination;
         public float expires_seconds;
@@ -58,6 +60,7 @@ public sealed class Main : MelonMod
 
     public override void OnInitializeMelon()
     {
+        PoliceConfiguration.load();
         for (int i = 0; i < responses.Length; i++) responses[i] = new ResponseState();
         for (int i = 0; i < recoveries.Length; i++) recoveries[i] = new StuckRecovery();
         HarmonyInstance.Patch(AccessTools.Method(typeof(NPCMovement), nameof(NPCMovement.SetDestination),
@@ -436,7 +439,7 @@ public sealed class Main : MelonMod
             var known = response.last_known_position;
             Vector3 origin = new(known.X, known.Y, known.Z);
             ref SearchCache cache = ref searches[index];
-            if (cache.player_code != player.PlayerCode || (cache.origin - origin).sqrMagnitude > 0.01f ||
+            if (cache.player_code != player.PlayerCode || cache.slot != rank || (cache.origin - origin).sqrMagnitude > 0.01f ||
                 Time.time >= cache.expires_seconds)
             {
                 if (Time.time >= search_queries_reset_seconds)
@@ -445,13 +448,23 @@ public sealed class Main : MelonMod
                     search_queries_reset_seconds = Time.time + 1f;
                 }
                 if (search_queries_count >= 8) return true;
-                cache = new SearchCache { player_code = player.PlayerCode, origin = origin, expires_seconds = Time.time + 6f };
+                cache = new SearchCache { player_code = player.PlayerCode, slot = rank, origin = origin, expires_seconds = Time.time + 6f };
                 for (int attempt = 0; attempt < 4 && search_queries_count < 8; attempt++)
                 {
                     search_queries_count++;
                     var point = SearchPattern.destination(known, rank, Time.time - response.search_started_seconds, attempt);
                     Vector3 candidate = new(point.X, point.Y, point.Z);
                     if (!PoliceNavigation.try_destination(officers[index]!.Movement, candidate, out Vector3 destination)) continue;
+                    bool occupied = false;
+                    for (int i = 0; i < officer_count; i++)
+                    {
+                        if (i == index || !searches[i].valid || searches[i].player_code != player.PlayerCode ||
+                            Time.time >= searches[i].expires_seconds || !available(officers[i])) continue;
+                        var other = officers[i]!.PursuitBehaviour;
+                        if (!other.Active || other.TargetPlayer == null || other.TargetPlayer.PlayerCode != player.PlayerCode) continue;
+                        if ((searches[i].destination - destination).sqrMagnitude < 2.25f) occupied = true;
+                    }
+                    if (occupied) continue;
                     cache.destination = destination;
                     cache.valid = true;
                     break;
@@ -481,6 +494,15 @@ public sealed class Main : MelonMod
             !officer.IsInVehicle && officer.PursuitBehaviour != null && officer.Movement != null;
     }
 
+    internal static OfficerRole pursuit_role(PursuitBehaviour pursuit, int index)
+    {
+        if (index < 0 || index >= officer_count || !available(officers[index]) ||
+            officers[index]!.PursuitBehaviour.Pointer != pursuit.Pointer || pursuit.TargetPlayer == null ||
+            intercept_targets[index] != pursuit.TargetPlayer.PlayerCode || Time.time >= intercept_seconds[index])
+            return OfficerRole.Chaser;
+        return pursuit_roles[index];
+    }
+
     private static void redirect_destination(NPCMovement __instance, ref Vector3 __0)
     {
         if (!running || !InstanceFinder.IsServer) return;
@@ -500,7 +522,9 @@ public sealed class Main : MelonMod
             var pursuit = current.PursuitBehaviour;
             Player player = pursuit.TargetPlayer;
             if (!pursuit.Active || player == null) return;
-            if (!pursuit.IsTargetImmediatelyVisible)
+            if (player.CrimeData == null || player.CrimeData.CurrentPursuitLevel == PlayerCrimeData.EPursuitLevel.None) return;
+            bool sighted = pursuit.IsTargetImmediatelyVisible || read_pursuit(player).visible;
+            if (!sighted)
             {
                 intercept_valid[current_index] = false;
                 intercept_seconds[current_index] = 0;
@@ -519,9 +543,8 @@ public sealed class Main : MelonMod
             }
             intercept_valid[current_index] = false;
             intercept_seconds[current_index] = Time.time + 1f;
-            int nearest_index = -1;
-            float nearest_distance_squared = float.PositiveInfinity;
-            int flank_index = 0;
+            Span<System.Numerics.Vector2> offsets = stackalloc System.Numerics.Vector2[officer_count];
+            offsets.Fill(new System.Numerics.Vector2(float.NaN, float.NaN));
             var separation = System.Numerics.Vector2.Zero;
             Vector3 current_position = current.transform.position;
             for (int i = 0; i < officer_count; i++)
@@ -529,31 +552,27 @@ public sealed class Main : MelonMod
                 PoliceOfficer? other = officers[i];
                 if (!available(other)) continue;
                 var other_pursuit = other!.PursuitBehaviour;
-                if (!other_pursuit.Active || !other_pursuit.IsTargetImmediatelyVisible ||
-                    other_pursuit.TargetPlayer == null || other_pursuit.TargetPlayer.PlayerCode != player.PlayerCode) continue;
-                if (i < current_index && ResponseRules.role(i) == OfficerRole.Interceptor) flank_index++;
+                if (!other_pursuit.Active || other_pursuit.TargetPlayer == null ||
+                    other_pursuit.TargetPlayer.PlayerCode != player.PlayerCode) continue;
+                Vector3 relative_position = other.transform.position - position;
+                if (Math.Abs(relative_position.y) > 2f) continue;
+                offsets[i] = new System.Numerics.Vector2(relative_position.x, relative_position.z);
                 Vector3 difference = current_position - other.transform.position;
-                if (Math.Abs(difference.y) < 2f)
-                    separation += PursuitSpacing.separation(new System.Numerics.Vector2(difference.x, difference.z), current_index, i);
-                float distance_squared = (other.transform.position - position).sqrMagnitude;
-                if (distance_squared >= nearest_distance_squared) continue;
-                nearest_distance_squared = distance_squared;
-                nearest_index = i;
+                separation += PursuitSpacing.separation(new System.Numerics.Vector2(difference.x, difference.z), current_index, i);
             }
-            if (nearest_index < 0 || nearest_index == current_index) return;
-            if (nearest_index < current_index && ResponseRules.role(nearest_index) == OfficerRole.Interceptor) flank_index--;
+            Vector3 velocity = player.VelocityCalculator == null ? Vector3.zero : player.VelocityCalculator.Velocity;
+            PursuitAssignment assignment = Interception.assign(offsets, current_index,
+                new System.Numerics.Vector2(velocity.x, velocity.z));
+            pursuit_roles[current_index] = assignment.role;
+            intercept_targets[current_index] = player.PlayerCode;
+            if (assignment.role == OfficerRole.Chaser) return;
             Vector3 relative = current_position - position;
             Vector3 destination = __0;
-            bool flanking = false;
-            if (ResponseRules.role(current_index) == OfficerRole.Interceptor && relative.sqrMagnitude >= 144f &&
-                (__0 - position).sqrMagnitude <= 16f && player.VelocityCalculator != null)
+            if (assignment.redirect && (assignment.role != OfficerRole.Interceptor || (__0 - position).sqrMagnitude <= 16f))
             {
-                Vector3 velocity = player.VelocityCalculator.Velocity;
-                flanking = Interception.try_offset(new System.Numerics.Vector2(velocity.x, velocity.z),
-                    new System.Numerics.Vector2(relative.x, relative.z), flank_index, out var offset);
-                if (flanking) destination = position + new Vector3(offset.X, 0, offset.Y);
+                destination = position + new Vector3(assignment.offset.X, 0, assignment.offset.Y);
             }
-            if (!flanking)
+            else
             {
                 var offset = PursuitSpacing.lateral_offset(separation, new System.Numerics.Vector2(-relative.x, -relative.z));
                 if (offset.LengthSquared() < 0.0625f) return;

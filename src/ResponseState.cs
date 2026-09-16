@@ -38,7 +38,7 @@ internal sealed class ResponseState
         player_code = code;
         phase = ResponsePhase.Responding;
         started_seconds = now_seconds;
-        dispatch_seconds = now_seconds + 5f;
+        dispatch_seconds = now_seconds + 5f * PoliceSettings.current.reinforcement_time;
     }
 
     public void observe(bool visible, bool searching, Vector3 known_position, float now_seconds)
@@ -46,7 +46,7 @@ internal sealed class ResponseState
         if (phase == ResponsePhase.Inactive || !float.IsFinite(now_seconds) || !float.IsFinite(known_position.LengthSquared())) return;
         if (urgent)
         {
-            dispatch_seconds = Math.Min(dispatch_seconds, now_seconds + 1f);
+            dispatch_seconds = Math.Min(dispatch_seconds, now_seconds + PoliceSettings.current.reinforcement_time);
             burst_count = 0;
             dispatch_phase = DispatchPhase.Spacing;
             urgent = false;
