@@ -4,6 +4,7 @@
     <AssemblyName>CoordinatedPolice</AssemblyName>
     <Version>0.8.1</Version>
     <Nullable>enable</Nullable>
+    <PathMap>$(MSBuildProjectDirectory)=/_/</PathMap>
     <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
   </PropertyGroup>
   <ItemGroup>

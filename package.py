@@ -1,4 +1,6 @@
+import argparse
 import json
+import shutil
 import struct
 import zlib
 from pathlib import Path
@@ -6,12 +8,21 @@ from zipfile import ZIP_DEFLATED, ZipFile
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Refresh the release DLL from the local Release build",
+    )
+    args = parser.parse_args()
     root = Path(__file__).resolve().parent
     manifest = json.loads((root / "package/manifest.json").read_text())
     assert len(manifest["description"]) <= 250
-    assembly = root / "bin/Release/net6.0/CoordinatedPolice.dll"
+    assembly = root / "package/CoordinatedPolice.dll"
+    if args.prepare:
+        shutil.copyfile(root / "bin/Release/net6.0/CoordinatedPolice.dll", assembly)
     if not assembly.is_file():
-        raise FileNotFoundError("Build CoordinatedPolice.dll before packaging")
+        raise FileNotFoundError("Run a Release build, then python package.py --prepare")
     pixels = bytearray()
     for y in range(256):
         pixels.append(0)

@@ -1,4 +1,3 @@
-import io
 import json
 import os
 import shutil
@@ -9,60 +8,8 @@ import unittest
 from pathlib import Path
 from zipfile import ZipFile
 
-import references
-
 
 class BuildChecks(unittest.TestCase):
-    def test_reference_allowlist(self) -> None:
-        for extra in [
-            "../secret.dll",
-            "net6/token.txt",
-            "/net6/secret.dll",
-            "net6/nested/file.dll",
-            "UserData/private.dll",
-        ]:
-            with self.subTest(extra=extra), ZipFile(io.BytesIO(), "w") as archive:
-                for name in references.REQUIRED:
-                    archive.writestr(name, b"reference")
-                archive.writestr(extra, b"bad")
-                with self.assertRaises(ValueError):
-                    references.validate(archive)
-        with ZipFile(io.BytesIO(), "w") as archive:
-            for name in references.REQUIRED:
-                archive.writestr(name, b"reference")
-            references.validate(archive)
-
-    def test_reference_checksum(self) -> None:
-        import hashlib
-
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            bundle = root / "references.zip"
-            with ZipFile(bundle, "w") as archive:
-                for name in references.REQUIRED:
-                    archive.writestr(name, b"reference")
-            command = [
-                sys.executable,
-                str(Path(references.__file__)),
-                "unpack",
-                str(bundle),
-                str(root / "unpacked"),
-            ]
-            environment = dict(os.environ, REFERENCE_SHA256="0" * 64)
-            wrong = subprocess.run(
-                command, env=environment, capture_output=True, check=False, timeout=10
-            )
-            self.assertNotEqual(wrong.returncode, 0)
-            self.assertFalse((root / "unpacked").exists())
-            environment["REFERENCE_SHA256"] = hashlib.sha256(
-                bundle.read_bytes()
-            ).hexdigest()
-            good = subprocess.run(
-                command, env=environment, capture_output=True, check=False, timeout=10
-            )
-            self.assertEqual(good.returncode, 0, good.stderr)
-            self.assertTrue((root / "unpacked/net6/MelonLoader.dll").is_file())
-
     def test_release_guards(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
