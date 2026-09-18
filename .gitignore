@@ -13,3 +13,8 @@ MelonLoader/
 UserData/
 .env
 .env.*
+
+__pycache__/
+ci/references.zip
+.ci-references/
+.ci-reference-bundle/

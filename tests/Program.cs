@@ -6,6 +6,15 @@ internal static class Program
 {
     private static void Main()
     {
+        uint first_day = DailyChance.score("test-player", 1);
+        if (first_day != DailyChance.score("test-player", 1) || first_day == DailyChance.score("test-player", 2))
+            throw new InvalidOperationException("Daily cosmetic selection must survive reload and vary by day.");
+        int rare_days = 0;
+        for (int day = 0; day < 10000; day++)
+            if (DailyChance.score("test-player", day) % 100 == 0) rare_days++;
+        if (rare_days < 50 || rare_days > 150) throw new InvalidOperationException("Daily cosmetic probability drift.");
+        if (DailyChance.score("test-player", -1) != uint.MaxValue) throw new InvalidOperationException("Invalid day rejected.");
+
         check_configuration();
         check_districts();
         check_population();

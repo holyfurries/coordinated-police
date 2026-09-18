@@ -1,0 +1,133 @@
+name: Build and package
+on:
+  pull_request:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish this version tag to Thunderstore
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: package-${{ github.ref }}-${{ github.event_name }}-${{ inputs.publish || false }}
+  cancel-in-progress: false
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Validate release metadata and CI helpers
+        run: |
+          python ci/release.py metadata
+          python -m unittest discover -s ci -p 'test_*.py'
+      - name: Require a version tag when publishing
+        if: inputs.publish
+        env:
+          REF_TYPE: ${{ github.ref_type }}
+        run: test "$REF_TYPE" = tag
+      - name: Run regression checks
+        run: |
+          dotnet run --project tests/Tests.csproj
+          dotnet format tests/Tests.csproj --verify-no-changes --no-restore
+  package:
+    needs: checks
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    outputs:
+      filename: ${{ steps.metadata.outputs.filename }}
+    env:
+      MelonLoaderDir: ${{ github.workspace }}/.ci-references
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Check reference configuration
+        env:
+          REFERENCE_REPOSITORY: ${{ vars.REFERENCE_REPOSITORY }}
+          REFERENCE_COMMIT: ${{ vars.REFERENCE_COMMIT }}
+          REFERENCE_TOKEN: ${{ secrets.REFERENCE_TOKEN }}
+        run: |
+          test -n "$REFERENCE_TOKEN" || { echo "Set REFERENCE_TOKEN for read access to the private reference repository."; exit 1; }
+          test -n "$REFERENCE_REPOSITORY"
+          [[ "$REFERENCE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+      - name: Check out private build references
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ vars.REFERENCE_REPOSITORY }}
+          ref: ${{ vars.REFERENCE_COMMIT }}
+          token: ${{ secrets.REFERENCE_TOKEN }}
+          path: .ci-reference-bundle
+          persist-credentials: false
+      - name: Verify and unpack references
+        env:
+          REFERENCE_SHA256: ${{ vars.REFERENCE_SHA256 }}
+        run: python ci/references.py unpack .ci-reference-bundle/references.zip "$MelonLoaderDir"
+      - name: Build and check formatting
+        run: |
+          dotnet build --configuration Release
+          dotnet format --verify-no-changes --no-restore
+      - name: Package Thunderstore ZIP
+        id: metadata
+        run: |
+          python package.py
+          python ci/release.py package
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: thunderstore-package
+          path: dist/${{ steps.metadata.outputs.filename }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Remove private references
+        if: always()
+        run: python -c 'import os, shutil; shutil.rmtree(os.environ["MelonLoaderDir"], ignore_errors=True); shutil.rmtree(".ci-reference-bundle", ignore_errors=True)'
+  publish:
+    needs: package
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: thunderstore
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
+        with:
+          dotnet-version: 8.0.x
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: thunderstore-package
+          path: dist
+      - name: Verify package and install Thunderstore CLI
+        run: |
+          python ci/release.py package
+          dotnet tool install --tool-path "$RUNNER_TEMP/tcli" tcli --version 0.2.4
+      - name: Publish the built ZIP
+        env:
+          TCLI_AUTH_TOKEN: ${{ secrets.TCLI_AUTH_TOKEN }}
+          PACKAGE_FILE: ${{ needs.package.outputs.filename }}
+        run: |
+          test -n "$TCLI_AUTH_TOKEN" || { echo 'Set the TCLI_AUTH_TOKEN secret.'; exit 1; }
+          "$RUNNER_TEMP/tcli/tcli" publish --config-path dist/thunderstore.toml --file "dist/$PACKAGE_FILE"

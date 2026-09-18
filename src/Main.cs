@@ -11,7 +11,7 @@ using MelonLoader;
 using UnityEngine;
 using UnityEngine.AI;
 
-[assembly: MelonInfo(typeof(CoordinatedPolice.Main), "Coordinated Police", "0.8.0", "holyfurries")]
+[assembly: MelonInfo(typeof(CoordinatedPolice.Main), "Coordinated Police", "0.8.1", "holyfurries")]
 [assembly: MelonGame("TVGS", "Schedule I")]
 
 namespace CoordinatedPolice;
@@ -94,6 +94,7 @@ public sealed class Main : MelonMod
         logged_server = null;
         logged_players = -1;
         Array.Clear(response_logs, 0, response_logs.Length);
+        ConeCop.reset();
         PoliceTactics.reset();
         PolicePopulation.reset();
         PoliceNavigation.reset();
@@ -123,6 +124,7 @@ public sealed class Main : MelonMod
                 logged_server = server;
                 logged_players = connected_count;
             }
+            ConeCop.tick();
             PolicePopulation.tick();
             if (!server) return;
             officer_count = Math.Min(PoliceOfficer.Officers.Count, officer_limit);

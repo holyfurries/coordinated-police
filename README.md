@@ -126,6 +126,8 @@ restored officer's local death state is cleared after host health and behaviour 
 Search for `Police: Navigation recovery` in the **host's** log when checking wall-walking.
 A recovery request does not confirm that the officer successfully moved afterward.
 
+Occasionally, an officer makes an unusual headwear choice. It is purely cosmetic.
+
 ## Compatibility
 
 Disable **Police Response Overhaul** and **Hardcore Police** before using this mod. Coordinated Police disables itself if either is detected.

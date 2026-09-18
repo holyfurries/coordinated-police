@@ -1,6 +1,6 @@
 # Development notes
 
-Behavior and regression checks for Coordinated Police 0.8.0. The in-game checklist
+Behavior and regression checks for Coordinated Police 0.8.1. The in-game checklist
 is not a record of completed tests.
 
 ## Severity and dispatch
@@ -329,3 +329,15 @@ replication, NavMesh behaviour and host/client agreement still require in-game c
 Verify a player turns back through a chase, reinforcements enter from the same street,
 and a four-player shootout transitions into search. Hidden player movement must not
 move the search origin. Check arrest contact and weapon spacing after roles change.
+
+## Cone cosmetic
+
+Each NPC ID plus ElapsedDays produces a stable hash. One in 256 scores qualifies; the
+lowest qualifying score among the first 128 registry entries wears the cone. Every peer
+computes the same choice when registry identities/day agree, including late joiners.
+Selection checks every five seconds after load, independent of host-only police decisions.
+A locally generated orange/white mesh attaches to HeadBone. It has no collider, network
+object, inventory effects or stat changes. Nothing modifies shared meshes or avatar settings.
+The existing hat remains beneath the cone. Owned materials/mesh/object are destroyed on
+scene unload; cosmetic failures disable only this feature. Validate head-bone placement,
+shader colour, culling, ragdolls and the same selection on Windows/Linux in-game.
